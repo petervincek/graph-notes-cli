@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use sqlx::{Pool, Sqlite, prelude::FromRow};
+use sqlx::{Executor, Pool, Sqlite, prelude::FromRow};
 use thiserror::Error;
 
 use crate::db::connection::PoolError;
@@ -20,7 +20,7 @@ pub struct Note {
 }
 
 /// Data required to create a new note.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NewNote {
     /// Title of the note (must be unique and non-empty).
     pub title: String,
@@ -81,10 +81,21 @@ impl<'a> NoteService<'a> {
         NoteService { pool: pool }
     }
 
+    pub async fn create_note(&self, new_note: NewNote) -> Result<Note> {
+        self.create_note_through_executor(new_note, self.pool).await
+    }
+
     /// Inserts a new note into the database after validating the input.
     ///
     /// Returns the created note with its generated id and timestamp.
-    pub async fn create_note(&self, new_note: NewNote) -> Result<Note> {
+    pub async fn create_note_through_executor<'e, E>(
+        &self,
+        new_note: NewNote,
+        executor: E,
+    ) -> Result<Note>
+    where
+        E: Executor<'e, Database = Sqlite>,
+    {
         new_note.validate()?;
         let created_note = sqlx::query_as::<_, Note>(
             r#"
@@ -96,15 +107,22 @@ impl<'a> NoteService<'a> {
         .bind(&new_note.title)
         .bind(&new_note.content)
         .bind(&new_note.metadata)
-        .fetch_one(self.pool)
+        .fetch_one(executor)
         .await?;
         Ok(created_note)
+    }
+
+    pub async fn get_note_by_id(&self, id: i64) -> Result<Note> {
+        self.get_note_by_id_through_executor(id, self.pool).await
     }
 
     /// Retrieves a note by its id.
     ///
     /// Returns an error if the note does not exist.
-    pub async fn get_note_by_id(&self, id: i64) -> Result<Note> {
+    pub async fn get_note_by_id_through_executor<'e, E>(&self, id: i64, executor: E) -> Result<Note>
+    where
+        E: Executor<'e, Database = Sqlite>,
+    {
         let maybe_note = sqlx::query_as::<_, Note>(
             r#"
             SELECT id, title, content, metadata, created_at
@@ -113,12 +131,17 @@ impl<'a> NoteService<'a> {
             "#,
         )
         .bind(id)
-        .fetch_optional(self.pool)
+        .fetch_optional(executor)
         .await?;
         match maybe_note {
             Some(note) => Ok(note),
             None => Err(NoteServiceError::NotFound),
         }
+    }
+
+    pub async fn list_notes(&self, limit: i64, offset: i64) -> Result<Vec<Note>> {
+        self.list_notes_through_executor(limit, offset, self.pool)
+            .await
     }
 
     /// Fetches a paginated list of notes from the database.
@@ -127,7 +150,15 @@ impl<'a> NoteService<'a> {
     ///
     /// * `limit` - Maximum number of notes to return.
     /// * `offset` - Number of notes to skip (for pagination).
-    pub async fn list_notes(&self, limit: i64, offset: i64) -> Result<Vec<Note>> {
+    pub async fn list_notes_through_executor<'e, E>(
+        &self,
+        limit: i64,
+        offset: i64,
+        executor: E,
+    ) -> Result<Vec<Note>>
+    where
+        E: Executor<'e, Database = Sqlite>,
+    {
         let notes = sqlx::query_as::<_, Note>(
             r#"
         SELECT id, title, content, metadata, created_at
@@ -138,15 +169,22 @@ impl<'a> NoteService<'a> {
         )
         .bind(limit)
         .bind(offset)
-        .fetch_all(self.pool)
+        .fetch_all(executor)
         .await?;
         Ok(notes)
+    }
+
+    pub async fn update_note(&self, note: Note) -> Result<Note> {
+        self.update_note_through_executor(note, self.pool).await
     }
 
     /// Updates an existing note in the database.
     ///
     /// Returns the updated note, or an error if the note does not exist.
-    pub async fn update_note(&self, note: Note) -> Result<Note> {
+    pub async fn update_note_through_executor<'e, E>(&self, note: Note, executor: E) -> Result<Note>
+    where
+        E: Executor<'e, Database = Sqlite>,
+    {
         let maybe_note = sqlx::query_as::<_, Note>(
             r#"
             UPDATE notes
@@ -159,7 +197,7 @@ impl<'a> NoteService<'a> {
         .bind(&note.content)
         .bind(&note.metadata)
         .bind(note.id)
-        .fetch_optional(self.pool)
+        .fetch_optional(executor)
         .await?;
         match maybe_note {
             Some(note) => Ok(note),
@@ -167,10 +205,21 @@ impl<'a> NoteService<'a> {
         }
     }
 
+    pub async fn delete_note_by_id(&self, id: i64) -> Result<()> {
+        self.delete_note_by_id_through_executor(id, self.pool).await
+    }
+
     /// Deletes a note by its id.
     ///
     /// Returns an error if the note does not exist.
-    pub async fn delete_note_by_id(&self, id: i64) -> Result<()> {
+    pub async fn delete_note_by_id_through_executor<'e, E>(
+        &self,
+        id: i64,
+        executor: E,
+    ) -> Result<()>
+    where
+        E: Executor<'e, Database = Sqlite>,
+    {
         let result = sqlx::query(
             r#"
             DELETE FROM notes
@@ -178,7 +227,7 @@ impl<'a> NoteService<'a> {
             "#,
         )
         .bind(id)
-        .execute(self.pool)
+        .execute(executor)
         .await?;
         if result.rows_affected() == 0 {
             Err(NoteServiceError::NotFound)
