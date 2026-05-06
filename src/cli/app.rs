@@ -162,7 +162,7 @@ mod tests {
     use clap::Parser;
     use futures_util::future::FutureExt;
     use rstest::rstest;
-    use sqlx::SqlitePool;
+    use sqlx::sqlite::SqlitePoolOptions;
 
     struct AppWithPool {
         app: App,
@@ -170,7 +170,12 @@ mod tests {
     }
 
     async fn create_sut() -> Result<AppWithPool, PoolError> {
-        let pool = Arc::new(SqlitePool::connect(":memory:").await?);
+        let pool = Arc::new(
+            SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect(":memory:")
+                .await?,
+        );
         connection::run_migrations(pool.clone()).await?;
         let app = App::create(pool.clone()).await?;
         Ok(AppWithPool { app, pool })

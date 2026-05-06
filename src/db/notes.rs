@@ -49,6 +49,16 @@ impl NewNote {
     }
 }
 
+impl From<&Note> for NewNote {
+    fn from(note: &Note) -> Self {
+        NewNote {
+            title: note.title.clone(),
+            content: note.content.clone(),
+            metadata: note.metadata.clone(),
+        }
+    }
+}
+
 /// Service for managing notes in the database.
 #[derive(Debug, Clone)]
 pub struct NoteService {
@@ -189,6 +199,8 @@ impl NoteService {
     where
         E: Executor<'e, Database = Sqlite>,
     {
+        // apply the same validation logic used for creating note
+        NewNote::from(&note).validate()?;
         let maybe_note = sqlx::query_as::<_, Note>(
             r#"
             UPDATE notes
@@ -248,7 +260,7 @@ mod tests {
     use super::*;
     use crate::db::connection::run_migrations;
     use rstest::rstest;
-    use sqlx::SqlitePool;
+    use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
 
     #[rstest]
     #[case::both_empty("", "", serde_json::Value::Null, Some("Title cannot be empty"))]
@@ -287,7 +299,12 @@ mod tests {
 
     // helper function to setup in-memory database (SQLite) for testing purposes
     async fn setup_test_db() -> Result<Arc<SqlitePool>> {
-        let pool = Arc::new(SqlitePool::connect(":memory:").await?);
+        let pool = Arc::new(
+            SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect(":memory:")
+                .await?,
+        );
         run_migrations(pool.clone()).await?;
         Ok(pool)
     }

@@ -280,11 +280,16 @@ mod tests {
         notes::{NewNote, NoteService},
     };
     use serde_json::json;
-    use sqlx::SqlitePool;
+    use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
 
     // helper function to setup in-memory database (SQLite) for testing purposes
     async fn setup_test_db() -> Result<Arc<SqlitePool>> {
-        let pool = Arc::new(SqlitePool::connect(":memory:").await?);
+        let pool = Arc::new(
+            SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect(":memory:")
+                .await?,
+        );
         run_migrations(pool.clone()).await?;
         Ok(pool)
     }
