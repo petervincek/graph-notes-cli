@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use sqlx::{
     Executor, Pool, Sqlite,
@@ -26,7 +29,7 @@ pub enum LinkServiceError {
 
 pub type Result<T> = std::result::Result<T, LinkServiceError>;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Type, ValueEnum)]
 #[sqlx(type_name = "TEXT")] // SQLite uses TEXT for enums
 pub enum LinkType {
     #[serde(rename = "reference")]
@@ -45,17 +48,17 @@ pub enum LinkType {
 
 #[derive(Debug, Serialize, Deserialize, FromRow, PartialEq)]
 pub struct Link {
-    from_note_id: i64,
-    to_note_id: i64,
-    link_type: LinkType,
-    created_at: chrono::NaiveDateTime,
+    pub from_note_id: i64,
+    pub to_note_id: i64,
+    pub link_type: LinkType,
+    pub created_at: chrono::NaiveDateTime,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct NewLink {
-    from_note_id: i64,
-    to_note_id: i64,
-    link_type: LinkType,
+    pub from_note_id: i64,
+    pub to_note_id: i64,
+    pub link_type: LinkType,
 }
 
 /// Represents a pair of new notes and the type of link to create between them.
@@ -83,23 +86,25 @@ impl NotesWithLinkType {
     }
 }
 
-pub struct LinkService<'a> {
+#[derive(Debug)]
+pub struct LinkService {
     /// Reference to the SQLite connection pool.
-    pool: &'a Pool<Sqlite>,
-    note_service: NoteService<'a>,
+    pool: Arc<Pool<Sqlite>>,
+    note_service: NoteService,
 }
 
-impl<'a> LinkService<'a> {
+impl LinkService {
     /// Creates a new LinkService with a reference to the database pool.
-    pub fn create(pool: &'a Pool<Sqlite>) -> Self {
+    pub fn create(pool: Arc<Pool<Sqlite>>) -> Self {
         LinkService {
-            pool: pool,
-            note_service: NoteService::create(pool),
+            pool: pool.clone(),
+            note_service: NoteService::create(pool.clone()),
         }
     }
 
     pub async fn create_link(&self, new_link: NewLink) -> Result<Link> {
-        self.create_link_through_executor(new_link, self.pool).await
+        self.create_link_through_executor(new_link, &*self.pool)
+            .await
     }
 
     pub async fn create_link_through_executor<'e, E>(
@@ -125,8 +130,43 @@ impl<'a> LinkService<'a> {
         Ok(created_link)
     }
 
+    pub async fn list_links(&self, limit: i64, offset: i64) -> Result<Vec<Link>> {
+        self.list_links_through_executor(limit, offset, &*self.pool)
+            .await
+    }
+
+    /// Fetches a paginated list of links from the database.
+    ///
+    /// # Arguments
+    ///
+    /// * `limit` - Maximum number of notes to return.
+    /// * `offset` - Number of notes to skip (for pagination).
+    pub async fn list_links_through_executor<'e, E>(
+        &self,
+        limit: i64,
+        offset: i64,
+        executor: E,
+    ) -> Result<Vec<Link>>
+    where
+        E: Executor<'e, Database = Sqlite>,
+    {
+        let links = sqlx::query_as::<_, Link>(
+            r#"
+        SELECT from_note_id, to_note_id, link_type, created_at 
+        FROM links
+        ORDER BY created_at DESC
+        LIMIT ?1 OFFSET ?2
+        "#,
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(executor)
+        .await?;
+        Ok(links)
+    }
+
     pub async fn update_link(&self, updated_link: Link) -> Result<Link> {
-        self.update_link_through_executor(updated_link, self.pool)
+        self.update_link_through_executor(updated_link, &*self.pool)
             .await
     }
 
@@ -158,7 +198,7 @@ impl<'a> LinkService<'a> {
     }
 
     pub async fn delete_link(&self, link_to_delete: Link) -> Result<()> {
-        self.delete_link_through_executor(link_to_delete, self.pool)
+        self.delete_link_through_executor(link_to_delete, &*self.pool)
             .await
     }
 
@@ -243,9 +283,9 @@ mod tests {
     use sqlx::SqlitePool;
 
     // helper function to setup in-memory database (SQLite) for testing purposes
-    async fn setup_test_db() -> Result<SqlitePool> {
-        let pool = SqlitePool::connect(":memory:").await?;
-        run_migrations(&pool).await?;
+    async fn setup_test_db() -> Result<Arc<SqlitePool>> {
+        let pool = Arc::new(SqlitePool::connect(":memory:").await?);
+        run_migrations(pool.clone()).await?;
         Ok(pool)
     }
 
@@ -253,8 +293,8 @@ mod tests {
     async fn test_create_link_between_notes() -> Result<()> {
         // create sut
         let pool = setup_test_db().await?;
-        let note_service = NoteService::create(&pool);
-        let link_service = LinkService::create(&pool);
+        let note_service = NoteService::create(pool.clone());
+        let link_service = LinkService::create(pool.clone());
         // exercise, verify
         let note_1 = note_service
             .create_note(NewNote {
@@ -296,8 +336,8 @@ mod tests {
     #[tokio::test]
     async fn test_duplicate_link_creation_should_fail() -> Result<()> {
         let pool = setup_test_db().await?;
-        let note_service = NoteService::create(&pool);
-        let link_service = LinkService::create(&pool);
+        let note_service = NoteService::create(pool.clone());
+        let link_service = LinkService::create(pool.clone());
         let note_1 = note_service
             .create_note(NewNote {
                 title: "dup1".into(),
@@ -329,8 +369,8 @@ mod tests {
     #[tokio::test]
     async fn test_update_link_type() -> Result<()> {
         let pool = setup_test_db().await?;
-        let note_service = NoteService::create(&pool);
-        let link_service = LinkService::create(&pool);
+        let note_service = NoteService::create(pool.clone());
+        let link_service = LinkService::create(pool.clone());
         let note_1 = note_service
             .create_note(NewNote {
                 title: "A".into(),
@@ -367,7 +407,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_nonexistent_link_should_fail() -> Result<()> {
         let pool = setup_test_db().await?;
-        let link_service = LinkService::create(&pool);
+        let link_service = LinkService::create(pool);
         let fake_link = Link {
             from_note_id: 100,
             to_note_id: 200,
@@ -385,8 +425,8 @@ mod tests {
     #[tokio::test]
     async fn test_delete_link() -> Result<()> {
         let pool = setup_test_db().await?;
-        let note_service = NoteService::create(&pool);
-        let link_service = LinkService::create(&pool);
+        let note_service = NoteService::create(pool.clone());
+        let link_service = LinkService::create(pool.clone());
         let note_1 = note_service
             .create_note(NewNote {
                 title: "del1".into(),
@@ -416,7 +456,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_nonexistent_link_should_fail() -> Result<()> {
         let pool = setup_test_db().await?;
-        let link_service = LinkService::create(&pool);
+        let link_service = LinkService::create(pool);
         let fake_link = Link {
             from_note_id: 999,
             to_note_id: 888,
@@ -434,8 +474,8 @@ mod tests {
     #[tokio::test]
     async fn test_linktype_enum_db_mapping() -> Result<()> {
         let pool = setup_test_db().await?;
-        let note_service = NoteService::create(&pool);
-        let link_service = LinkService::create(&pool);
+        let note_service = NoteService::create(pool.clone());
+        let link_service = LinkService::create(pool.clone());
         let note_1 = note_service
             .create_note(NewNote {
                 title: "enum1".into(),
@@ -473,7 +513,7 @@ mod tests {
     #[tokio::test]
     async fn test_foreign_key_constraint_should_fail() -> Result<()> {
         let pool = setup_test_db().await?;
-        let link_service = LinkService::create(&pool);
+        let link_service = LinkService::create(pool);
         let new_link = NewLink {
             from_note_id: 12345, // does not exist
             to_note_id: 67890,   // does not exist
@@ -490,8 +530,8 @@ mod tests {
     #[tokio::test]
     async fn test_self_link_creation() -> Result<()> {
         let pool = setup_test_db().await?;
-        let note_service = NoteService::create(&pool);
-        let link_service = LinkService::create(&pool);
+        let note_service = NoteService::create(pool.clone());
+        let link_service = LinkService::create(pool.clone());
         let note = note_service
             .create_note(NewNote {
                 title: "selflink".into(),
@@ -516,8 +556,8 @@ mod tests {
     #[tokio::test]
     async fn test_transaction_commit_persists_changes() -> Result<()> {
         let pool = setup_test_db().await?;
-        let note_service = NoteService::create(&pool);
-        let link_service = LinkService::create(&pool);
+        let note_service = NoteService::create(pool.clone());
+        let link_service = LinkService::create(pool.clone());
         let mut tx = pool.begin().await?;
 
         // Create two notes and a link between them in a transaction
@@ -566,7 +606,7 @@ mod tests {
                 to_note_id: note_2.id,
                 link_type: LinkType::Reference,
             },
-            &pool,
+            &*pool,
         );
         // The link already exists, so this should fail with a database error
         assert!(matches!(
@@ -579,8 +619,8 @@ mod tests {
     #[tokio::test]
     async fn test_transaction_rollback_discards_changes() -> Result<()> {
         let pool = setup_test_db().await?;
-        let note_service = NoteService::create(&pool);
-        let link_service = LinkService::create(&pool);
+        let note_service = NoteService::create(pool.clone());
+        let link_service = LinkService::create(pool.clone());
         let mut tx = pool.begin().await?;
 
         // Create two notes and a link between them in a transaction
@@ -652,7 +692,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_notes_with_relationship_multiple_success() -> Result<()> {
         let pool = setup_test_db().await?;
-        let link_service = LinkService::create(&pool);
+        let link_service = LinkService::create(pool.clone());
         let notes = vec![
             NotesWithLinkType::create(
                 NewNote {
@@ -691,7 +731,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_notes_with_relationship_empty_vec() -> Result<()> {
         let pool = setup_test_db().await?;
-        let link_service = LinkService::create(&pool);
+        let link_service = LinkService::create(pool.clone());
         let notes: Vec<NotesWithLinkType> = vec![];
         let links = link_service.create_notes_with_relationship(notes).await?;
         assert!(links.is_empty());
@@ -701,7 +741,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_notes_with_relationship_duplicate_notes() -> Result<()> {
         let pool = setup_test_db().await?;
-        let link_service = LinkService::create(&pool);
+        let link_service = LinkService::create(pool);
         let notes = vec![NotesWithLinkType::create(
             NewNote {
                 title: String::from("Title A"),
@@ -733,7 +773,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_notes_with_relationship_rollback_on_error() {
         let pool = setup_test_db().await.unwrap();
-        let link_service = LinkService::create(&pool);
+        let link_service = LinkService::create(pool.clone());
         // The second link will fail due to invalid link_type (simulate error by using invalid note id after first insert)
         let notes = vec![
             NotesWithLinkType::create(
@@ -767,9 +807,9 @@ mod tests {
         let result = link_service.create_notes_with_relationship(notes).await;
         assert!(result.is_err());
         // Ensure nothing was committed
-        let _note_service = NoteService::create(&pool);
+        let _note_service = NoteService::create(pool.clone());
         let all_notes_count: i64 = sqlx::query_scalar("SELECT COUNT(*) as count FROM notes")
-            .fetch_one(&pool)
+            .fetch_one(&*pool)
             .await
             .unwrap();
         assert_eq!(all_notes_count, 0);

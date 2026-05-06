@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use sqlx::{Executor, Pool, Sqlite, prelude::FromRow};
 use thiserror::Error;
@@ -48,9 +50,10 @@ impl NewNote {
 }
 
 /// Service for managing notes in the database.
-pub struct NoteService<'a> {
+#[derive(Debug, Clone)]
+pub struct NoteService {
     /// Reference to the SQLite connection pool.
-    pool: &'a Pool<Sqlite>,
+    pool: Arc<Pool<Sqlite>>,
 }
 
 /// Errors that can occur when working with notes.
@@ -75,14 +78,15 @@ pub enum NoteServiceError {
 
 pub type Result<T> = std::result::Result<T, NoteServiceError>;
 
-impl<'a> NoteService<'a> {
+impl NoteService {
     /// Creates a new NoteService with a reference to the database pool.
-    pub fn create(pool: &'a Pool<Sqlite>) -> Self {
+    pub fn create(pool: Arc<Pool<Sqlite>>) -> Self {
         NoteService { pool: pool }
     }
 
     pub async fn create_note(&self, new_note: NewNote) -> Result<Note> {
-        self.create_note_through_executor(new_note, self.pool).await
+        self.create_note_through_executor(new_note, &*self.pool)
+            .await
     }
 
     /// Inserts a new note into the database after validating the input.
@@ -113,7 +117,7 @@ impl<'a> NoteService<'a> {
     }
 
     pub async fn get_note_by_id(&self, id: i64) -> Result<Note> {
-        self.get_note_by_id_through_executor(id, self.pool).await
+        self.get_note_by_id_through_executor(id, &*self.pool).await
     }
 
     /// Retrieves a note by its id.
@@ -140,7 +144,7 @@ impl<'a> NoteService<'a> {
     }
 
     pub async fn list_notes(&self, limit: i64, offset: i64) -> Result<Vec<Note>> {
-        self.list_notes_through_executor(limit, offset, self.pool)
+        self.list_notes_through_executor(limit, offset, &*self.pool)
             .await
     }
 
@@ -175,7 +179,7 @@ impl<'a> NoteService<'a> {
     }
 
     pub async fn update_note(&self, note: Note) -> Result<Note> {
-        self.update_note_through_executor(note, self.pool).await
+        self.update_note_through_executor(note, &*self.pool).await
     }
 
     /// Updates an existing note in the database.
@@ -206,7 +210,8 @@ impl<'a> NoteService<'a> {
     }
 
     pub async fn delete_note_by_id(&self, id: i64) -> Result<()> {
-        self.delete_note_by_id_through_executor(id, self.pool).await
+        self.delete_note_by_id_through_executor(id, &*self.pool)
+            .await
     }
 
     /// Deletes a note by its id.
@@ -281,9 +286,9 @@ mod tests {
     }
 
     // helper function to setup in-memory database (SQLite) for testing purposes
-    async fn setup_test_db() -> Result<SqlitePool> {
-        let pool = SqlitePool::connect(":memory:").await?;
-        run_migrations(&pool).await?;
+    async fn setup_test_db() -> Result<Arc<SqlitePool>> {
+        let pool = Arc::new(SqlitePool::connect(":memory:").await?);
+        run_migrations(pool.clone()).await?;
         Ok(pool)
     }
 
@@ -291,7 +296,7 @@ mod tests {
     async fn test_create_and_get_note() -> Result<()> {
         // create sut
         let pool = setup_test_db().await?;
-        let note_service = NoteService::create(&pool);
+        let note_service = NoteService::create(pool);
 
         // exercise, verify
         // create part
@@ -316,7 +321,7 @@ mod tests {
     async fn test_create_update_get_note() -> Result<()> {
         // create sut
         let pool = setup_test_db().await?;
-        let note_service = NoteService::create(&pool);
+        let note_service = NoteService::create(pool);
 
         // exercise, verify
         // create part
@@ -349,7 +354,7 @@ mod tests {
     async fn test_create_get_delete_note() -> Result<()> {
         // create sut
         let pool = setup_test_db().await?;
-        let note_service = NoteService::create(&pool);
+        let note_service = NoteService::create(pool);
 
         // exercise, verify
         // create part
@@ -380,7 +385,7 @@ mod tests {
     #[tokio::test]
     async fn test_duplicate_title() -> Result<()> {
         let pool = setup_test_db().await?;
-        let note_service = NoteService::create(&pool);
+        let note_service = NoteService::create(pool);
 
         let _note1 = note_service
             .create_note(NewNote {
@@ -409,7 +414,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_notes_pagination() -> Result<()> {
         let pool = setup_test_db().await?;
-        let note_service = NoteService::create(&pool);
+        let note_service = NoteService::create(pool);
 
         // Insert 5 notes
         for i in 0..5 {
@@ -436,7 +441,7 @@ mod tests {
     #[tokio::test]
     async fn test_metadata_handling() -> Result<()> {
         let pool = setup_test_db().await?;
-        let note_service = NoteService::create(&pool);
+        let note_service = NoteService::create(pool);
 
         let metadata = serde_json::json!({"tag": "unit", "priority": 1});
         let created_note = note_service
@@ -456,7 +461,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_note_not_found() -> Result<()> {
         let pool = setup_test_db().await?;
-        let note_service = NoteService::create(&pool);
+        let note_service = NoteService::create(pool);
 
         let fake_note = Note {
             id: 999,
@@ -474,7 +479,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_note_not_found() -> Result<()> {
         let pool = setup_test_db().await?;
-        let note_service = NoteService::create(&pool);
+        let note_service = NoteService::create(pool);
         let result = note_service.delete_note_by_id(999).await;
         assert!(matches!(result, Err(NoteServiceError::NotFound)));
         Ok(())
@@ -484,7 +489,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_note_validation_error() -> Result<()> {
         let pool = setup_test_db().await?;
-        let note_service = NoteService::create(&pool);
+        let note_service = NoteService::create(pool);
         let result = note_service
             .create_note(NewNote {
                 title: "".to_string(),

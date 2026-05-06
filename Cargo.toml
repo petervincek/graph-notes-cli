@@ -13,8 +13,10 @@ chrono = {version = "0.4", features = ["serde"]}
 thiserror = "2.0.18"
 anyhow = "1.0"
 sqlx = { version = "0.8.6", features = ["sqlite", "chrono", "runtime-tokio-native-tls"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1.52.2", features = ["full"] }
 dotenvy = "0.15"
+clap = {version = "4.6.1", features = ["derive"]}
 
 [dev-dependencies]
 rstest = "0.26.1"
+futures-util = "0.3"

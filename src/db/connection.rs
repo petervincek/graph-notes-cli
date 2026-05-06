@@ -44,12 +44,12 @@ pub async fn get_db_connection_pool() -> Result<Arc<Pool<Sqlite>>> {
     let db_pool = SqlitePool::connect(&db_url).await?;
     let pool = Arc::new(db_pool);
     let _ = DB_POOL.set(pool.clone());
-    run_migrations(pool.as_ref()).await?;
+    run_migrations(pool.clone()).await?;
     Ok(pool)
 }
 
-pub async fn run_migrations(pool: &Pool<Sqlite>) -> Result<()> {
-    sqlx::migrate!("./migrations").run(pool).await?;
+pub async fn run_migrations(pool: Arc<Pool<Sqlite>>) -> Result<()> {
+    sqlx::migrate!("./migrations").run(&*pool).await?;
     log::info!("Run migrations scripts successful.");
     Ok(())
 }
