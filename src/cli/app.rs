@@ -136,7 +136,7 @@ impl App {
     async fn run_with_args(&self, args: Args) -> Result<(), AppError> {
         match args.command {
             Commands::Create { title, content } => {
-                log::info!(
+                log::debug!(
                     "Calling create with title: {:?}, content: {:?}",
                     title,
                     content
@@ -150,17 +150,17 @@ impl App {
                         metadata: json!({}),
                     })
                     .await?;
-                log::info!("Created note with id: {:?}", created_note.id);
+                log::debug!("Created note with id: {:?}", created_note.id);
                 Ok(())
             }
             Commands::Read { id } => {
-                log::info!("Reading/Fetching graph note with id: {:?}", id);
+                log::debug!("Reading/Fetching graph note with id: {:?}", id);
                 let note = self.get_note_service().await?.get_note_by_id(id).await?;
-                log::info!("Fetched note: {:?}", note);
+                log::debug!("Fetched note: {:?}", note);
                 Ok(())
             }
             Commands::Update { id, title, content } => {
-                log::info!(
+                log::debug!(
                     "Updating graph note with id: {:?} and title: {:?}, content: {:?}",
                     id,
                     title,
@@ -177,14 +177,14 @@ impl App {
                     .await?
                     .update_note(note_to_update)
                     .await?;
-                log::info!("Updated note with id: {:?}", updated_note.id);
+                log::debug!("Updated note with id: {:?}", updated_note.id);
                 Ok(())
             }
             Commands::Delete { id } => {
-                log::info!("Deleting/Removing graph note with id: {:?}", id);
+                log::debug!("Deleting/Removing graph note with id: {:?}", id);
                 // by deleting the note we delete also the related links to this node (DELETE CASCADE)
                 self.get_note_service().await?.delete_note_by_id(id).await?;
-                log::info!("Note with id: {:?} deleted successfully", id);
+                log::debug!("Note with id: {:?} deleted successfully", id);
                 Ok(())
             }
             Commands::Link {
@@ -192,7 +192,7 @@ impl App {
                 to_note_id,
                 link_type,
             } => {
-                log::info!(
+                log::debug!(
                     "Linking two graph notes, from_note_id: {:?} -> {:?} -> to_note_id: {:?}",
                     from_note_id,
                     link_type,
@@ -207,7 +207,7 @@ impl App {
                         link_type,
                     })
                     .await?;
-                log::info!(
+                log::debug!(
                     "Graph notes linked successfully, from_note_id: {:?} -> {:?} -> to_note_id: {:?}",
                     created_link.from_note_id,
                     created_link.link_type,
@@ -230,7 +230,7 @@ impl App {
             },
         )?;
         setup_logger(&config.log_level);
-        log::info!("Config: {:?}", config);
+        log::debug!("Config: {:?}", config);
         let connection = Arc::new(Connection { config: config });
         let _ = CONNECTION.set(connection);
         self.run_with_args(args).await?;
