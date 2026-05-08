@@ -14,6 +14,7 @@ use crate::{
         links::{LinkService, LinkServiceError, LinkType, NewLink},
         notes::{NewNote, NoteService, NoteServiceError},
     },
+    logger::logger::setup_logger,
 };
 
 /// Lazily initialized Connection wrapped in Arc for thread-safe sharing.
@@ -228,6 +229,7 @@ impl App {
                 log_level: args.log_level.clone(),
             },
         )?;
+        setup_logger(&config.log_level);
         log::info!("Config: {:?}", config);
         let connection = Arc::new(Connection { config: config });
         let _ = CONNECTION.set(connection);
