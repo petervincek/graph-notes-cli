@@ -76,6 +76,8 @@ pub enum Commands {
         id: i64,
         title: String,
         content: String,
+        #[arg(long)]
+        metadata: Option<String>,
     },
     /// Delete/Remove a graph note by id
     Delete { id: i64 },
@@ -184,12 +186,18 @@ impl App {
                 println!("{}", serde_json::to_string_pretty(&note)?);
                 Ok(())
             }
-            Commands::Update { id, title, content } => {
+            Commands::Update {
+                id,
+                title,
+                content,
+                metadata,
+            } => {
                 log::debug!(
-                    "Updating graph note with id: {:?} and title: {:?}, content: {:?}",
+                    "Updating graph note with id: {:?} and title: {:?}, content: {:?}, metadata: {:?}",
                     id,
                     title,
-                    content
+                    content,
+                    metadata
                 );
                 let existing_note = self.get_note_service().await?.get_note_by_id(id).await?;
 
@@ -197,6 +205,9 @@ impl App {
                 let mut note_to_update = existing_note;
                 note_to_update.title = title;
                 note_to_update.content = content;
+                if let Some(possible_metadata) = metadata {
+                    note_to_update.metadata = serde_json::from_str(&possible_metadata)?;
+                }
                 let updated_note = self
                     .get_note_service()
                     .await?
