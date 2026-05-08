@@ -35,6 +35,8 @@ pub enum AppError {
     AppPoolError(#[from] PoolError),
     #[error("Application config error: {0}")]
     AppConfigError(#[from] ConfigError),
+    #[error("Serialization error: {0}")]
+    AppSerializationError(#[from] serde_json::Error),
 }
 
 #[derive(Debug, Parser)]
@@ -151,12 +153,14 @@ impl App {
                     })
                     .await?;
                 log::debug!("Created note with id: {:?}", created_note.id);
+                println!("{}", serde_json::to_string_pretty(&created_note)?);
                 Ok(())
             }
             Commands::Read { id } => {
                 log::debug!("Reading/Fetching graph note with id: {:?}", id);
                 let note = self.get_note_service().await?.get_note_by_id(id).await?;
                 log::debug!("Fetched note: {:?}", note);
+                println!("{}", serde_json::to_string_pretty(&note)?);
                 Ok(())
             }
             Commands::Update { id, title, content } => {
@@ -178,6 +182,7 @@ impl App {
                     .update_note(note_to_update)
                     .await?;
                 log::debug!("Updated note with id: {:?}", updated_note.id);
+                println!("{}", serde_json::to_string_pretty(&updated_note)?);
                 Ok(())
             }
             Commands::Delete { id } => {
@@ -185,6 +190,7 @@ impl App {
                 // by deleting the note we delete also the related links to this node (DELETE CASCADE)
                 self.get_note_service().await?.delete_note_by_id(id).await?;
                 log::debug!("Note with id: {:?} deleted successfully", id);
+                println!("Note with id: {} deleted.", id);
                 Ok(())
             }
             Commands::Link {
@@ -213,6 +219,7 @@ impl App {
                     created_link.link_type,
                     created_link.to_note_id
                 );
+                println!("{}", serde_json::to_string_pretty(&created_link)?);
                 Ok(())
             }
         }
