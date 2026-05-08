@@ -85,7 +85,7 @@ impl Connection {
 
 pub async fn run_migrations(pool: Arc<Pool<Sqlite>>) -> Result<()> {
     sqlx::migrate!("./migrations").run(&*pool).await?;
-    log::info!("Run migrations scripts successful.");
+    log::debug!("Run migrations scripts successful.");
     Ok(())
 }
 
