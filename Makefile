@@ -2,6 +2,10 @@
 build:
 	cargo build
 
+# Define the target: build-prod
+build-prod:
+	cargo build --release
+
 # Define the target: clean
 clean:
 	cargo clean
