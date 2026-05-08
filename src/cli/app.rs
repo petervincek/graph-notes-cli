@@ -92,7 +92,7 @@ pub enum Commands {
 }
 
 impl App {
-    pub async fn create(option_pool: Option<Arc<Pool<Sqlite>>>) -> Self {
+    pub fn create(option_pool: Option<Arc<Pool<Sqlite>>>) -> Self {
         if let Some(pool) = option_pool {
             // if there is a pool injected through the creator function, then use it
             // this can be used to control the dependency in automated test environment
@@ -289,7 +289,9 @@ log_level = "info"
         setup_logger(&config.log_level);
         log::debug!("Config: {:?}", config);
         let connection = Arc::new(Connection { config: config });
-        let _ = CONNECTION.set(connection);
+        CONNECTION.set(connection).map_err(|_| {
+            ConfigError::Message("global connection has already been initialized".to_string())
+        })?;
         self.run_with_args(args).await?;
         Ok(())
     }
@@ -324,7 +326,7 @@ mod tests {
                 .await?,
         );
         connection::run_migrations(pool.clone()).await?;
-        let app = App::create(Some(pool.clone())).await;
+        let app = App::create(Some(pool.clone()));
         Ok(AppWithPool { app, pool })
     }
 
