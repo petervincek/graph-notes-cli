@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use config::ConfigError;
-use serde_json::json;
 use sqlx::{Pool, Sqlite};
 use thiserror::Error;
 use tokio::sync::OnceCell;
@@ -58,7 +57,12 @@ pub struct Args {
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Create a new graph note
-    Create { title: String, content: String },
+    Create {
+        title: String,
+        content: String,
+        #[arg(long)]
+        metadata: Option<String>,
+    },
     /// Read a graph note by provided id
     Read { id: i64 },
     /// Update a existing graph note by id
@@ -137,19 +141,28 @@ impl App {
 
     async fn run_with_args(&self, args: Args) -> Result<(), AppError> {
         match args.command {
-            Commands::Create { title, content } => {
+            Commands::Create {
+                title,
+                content,
+                metadata,
+            } => {
                 log::debug!(
                     "Calling create with title: {:?}, content: {:?}",
                     title,
                     content
                 );
+                let parsed_metadata = if let Some(possible_metadata) = metadata {
+                    serde_json::from_str(&possible_metadata)?
+                } else {
+                    serde_json::Value::Null
+                };
                 let created_note = self
                     .get_note_service()
                     .await?
                     .create_note(NewNote {
                         title,
                         content,
-                        metadata: json!({}),
+                        metadata: parsed_metadata,
                     })
                     .await?;
                 log::debug!("Created note with id: {:?}", created_note.id);
@@ -257,6 +270,7 @@ mod tests {
     use clap::CommandFactory;
     use clap::Parser;
     use rstest::rstest;
+    use serde_json::json;
     use sqlx::sqlite::SqlitePoolOptions;
 
     struct AppWithPool {
