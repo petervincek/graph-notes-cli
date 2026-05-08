@@ -1,3 +1,5 @@
+use std::{env, path::PathBuf};
+
 use config::{Config, ConfigError, Environment, File};
 use serde::Deserialize;
 
@@ -33,7 +35,7 @@ impl AppConfig {
     /// # Errors
     /// Returns `ConfigError` if configuration building or deserialization fails.
     pub fn from_sources(
-        config_path: Option<&str>,
+        config_path: Option<PathBuf>,
         cli_options: CliOptions,
     ) -> Result<Self, ConfigError> {
         // let's start with the default options
@@ -41,9 +43,23 @@ impl AppConfig {
             .set_default("db_url", "graph-notes-dev.db")?
             .set_default("log_level", "info")?;
 
+        // Determine config file path: CLI > XDG > None
+        let config_file_path = if let Some(path) = config_path {
+            Some(path)
+        } else {
+            // if not provided, try to find in standard places for configuration
+            // XDG logic
+            let xdg_path = xdg_config_path().join("config.toml");
+            if xdg_path.exists() {
+                Some(xdg_path)
+            } else {
+                None
+            }
+        };
+
         // optional config file (TOML)
-        if let Some(path) = config_path {
-            config_builder = config_builder.add_source(File::with_name(path).required(false));
+        if let Some(path) = config_file_path {
+            config_builder = config_builder.add_source(File::from(path).required(false));
         }
 
         // check for environment variables
@@ -58,5 +74,16 @@ impl AppConfig {
             config_builder = config_builder.set_override("log_level", log_level)?;
         }
         config_builder.build()?.try_deserialize()
+    }
+}
+
+pub fn xdg_config_path() -> PathBuf {
+    if let Ok(xdg_config_home) = env::var("XDG_CONFIG_HOME") {
+        PathBuf::from(xdg_config_home).join("graph-notes-cli")
+    } else if let Ok(home) = env::var("HOME") {
+        PathBuf::from(home).join(".config/graph-notes-cli")
+    } else {
+        // fallback: current directory
+        PathBuf::from(".")
     }
 }

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fs, path::PathBuf, sync::Arc};
 
 use clap::{Parser, Subcommand};
 use config::ConfigError;
@@ -7,7 +7,7 @@ use thiserror::Error;
 use tokio::sync::OnceCell;
 
 use crate::{
-    config::config::{AppConfig, CliOptions},
+    config::config::{AppConfig, CliOptions, xdg_config_path},
     db::{
         connection::{Connection, PoolError},
         links::{LinkService, LinkServiceError, LinkType, NewLink},
@@ -36,12 +36,18 @@ pub enum AppError {
     AppConfigError(#[from] ConfigError),
     #[error("Serialization error: {0}")]
     AppSerializationError(#[from] serde_json::Error),
+    #[error("Application IO error: {0}")]
+    AppIoError(#[from] std::io::Error),
 }
 
 #[derive(Debug, Parser)]
 #[command(name = "graph-notes-cli")]
 #[command(about = "Terminal application for managing graph notes")]
 pub struct Args {
+    /// Optional config file path (overrides default config discovery)
+    #[arg(long)]
+    pub config: Option<String>,
+
     /// Optional database URL (overrides config/env)
     #[arg(long)]
     pub db_url: Option<String>,
@@ -79,6 +85,8 @@ pub enum Commands {
         to_note_id: i64,
         link_type: LinkType,
     },
+    /// Initialize a default configuration file in the standard config directory
+    InitConfig,
 }
 
 impl App {
@@ -235,15 +243,33 @@ impl App {
                 println!("{}", serde_json::to_string_pretty(&created_link)?);
                 Ok(())
             }
+            Commands::InitConfig => {
+                let config_dir = xdg_config_path();
+                let config_path = config_dir.join("config.toml");
+                if config_path.exists() {
+                    println!("Config file already exists at: {}", config_path.display());
+                } else {
+                    fs::create_dir_all(&config_dir)?;
+                    // Provide your default config content here
+                    let default_config = r#"
+db_url = "sqlite://notes.db"
+log_level = "info"
+"#;
+                    fs::write(&config_path, default_config)?;
+                    println!("Default config created at: {}", config_path.display());
+                }
+                Ok(())
+            }
         }
     }
 
     pub async fn run(&self) -> Result<(), AppError> {
         // parse the command line arguments
         let args = Args::parse();
+        let config_path = args.config.as_ref().map(|s| PathBuf::from(s));
         // provide the possible config overrides from command line arguments
         let config = AppConfig::from_sources(
-            None,
+            config_path,
             CliOptions {
                 db_url: args.db_url.clone(),
                 log_level: args.log_level.clone(),
@@ -297,19 +323,27 @@ mod tests {
         let mut help_buf = Vec::new();
         cmd.write_long_help(&mut help_buf).unwrap();
         let help_str = String::from_utf8(help_buf).unwrap();
-        println!("HELP MSG: {:?}", help_str);
         assert!(help_str.contains("Terminal application for managing graph notes"));
         assert!(help_str.contains("Usage: graph-notes-cli [OPTIONS] <COMMAND>"));
         assert!(help_str.contains("Commands:"));
-        assert!(help_str.contains("create  Create a new graph note"));
-        assert!(help_str.contains("read    Read a graph note by provided id"));
-        assert!(help_str.contains("update  Update a existing graph note by id"));
-        assert!(help_str.contains("delete  Delete/Remove a graph note by id"));
-        assert!(help_str.contains("link    Link to graph notes"));
+        assert!(help_str.contains("create       Create a new graph note"));
+        assert!(help_str.contains("read         Read a graph note by provided id"));
+        assert!(help_str.contains("update       Update a existing graph note by id"));
+        assert!(help_str.contains("delete       Delete/Remove a graph note by id"));
+        assert!(help_str.contains("link         Link to graph notes"));
+        assert!(help_str.contains(
+            "init-config  Initialize a default configuration file in the standard config directory"
+        ));
         assert!(
-            help_str.contains("help    Print this message or the help of the given subcommand(s)")
+            help_str
+                .contains("help         Print this message or the help of the given subcommand(s)")
         );
         assert!(help_str.contains("Options:"));
+        assert!(help_str.contains("      --config <CONFIG>"));
+        assert!(
+            help_str
+                .contains("        Optional config file path (overrides default config discovery)")
+        );
         assert!(help_str.contains("      --db-url <DB_URL>"));
         assert!(help_str.contains("          Optional database URL (overrides config/env)"));
         assert!(help_str.contains("      --log-level <LOG_LEVEL>"));
