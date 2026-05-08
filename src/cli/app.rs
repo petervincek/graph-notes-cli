@@ -41,7 +41,8 @@ pub enum AppError {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "graph-notes-cli")]
+#[command(author = "Peter Vincek")]
+#[command(name = "graph-notes-cli", version)]
 #[command(about = "Terminal application for managing graph notes")]
 pub struct Args {
     /// Optional config file path (overrides default config discovery)
@@ -363,6 +364,8 @@ mod tests {
         assert!(help_str.contains("          Optional log level (overrides config/env)"));
         assert!(help_str.contains("  -h, --help"));
         assert!(help_str.contains("          Print help"));
+        assert!(help_str.contains("  -V, --version"));
+        assert!(help_str.contains("          Print version"));
 
         Ok(())
     }
