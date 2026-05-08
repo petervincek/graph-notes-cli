@@ -84,12 +84,12 @@ graph-notes-cli [OPTIONS] <COMMAND>
 	graph-notes-cli read 1
 	```
 
-- `update <ID> <TITLE> <CONTENT>`  
+- `update <ID> <TITLE> <CONTENT> [--metadata <JSON>]`  
 	Update an existing graph note by ID.
   
 	**Example:**
 	```sh
-	graph-notes-cli update 1 "Updated Title" "Updated Content"
+	graph-notes-cli update 1 "Updated Title" "Updated Content" --metadata '{"tags":["cli"]}'
 	```
 
 - `delete <ID>`  
