@@ -1,24 +1,53 @@
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use config::ConfigError;
 use serde_json::json;
 use sqlx::{Pool, Sqlite};
+use thiserror::Error;
+use tokio::sync::OnceCell;
 
-use crate::db::{
-    connection::PoolError,
-    links::{LinkService, LinkType, NewLink},
-    notes::{NewNote, NoteService},
+use crate::{
+    config::config::{AppConfig, CliOptions},
+    db::{
+        connection::{Connection, PoolError},
+        links::{LinkService, LinkServiceError, LinkType, NewLink},
+        notes::{NewNote, NoteService, NoteServiceError},
+    },
 };
 
+/// Lazily initialized Connection wrapped in Arc for thread-safe sharing.
+static CONNECTION: once_cell::sync::OnceCell<Arc<Connection>> = once_cell::sync::OnceCell::new();
 pub struct App {
-    note_service: NoteService,
-    link_service: LinkService,
+    pool: OnceCell<Arc<Pool<Sqlite>>>,
+    note_service: OnceCell<NoteService>,
+    link_service: OnceCell<LinkService>,
+}
+
+#[derive(Debug, Error)]
+pub enum AppError {
+    #[error("Application note error: {0}")]
+    AppNoteError(#[from] NoteServiceError),
+    #[error("Application link error: {0}")]
+    AppLinkError(#[from] LinkServiceError),
+    #[error("Application pool error: {0}")]
+    AppPoolError(#[from] PoolError),
+    #[error("Application config error: {0}")]
+    AppConfigError(#[from] ConfigError),
 }
 
 #[derive(Debug, Parser)]
 #[command(name = "graph-notes-cli")]
 #[command(about = "Terminal application for managing graph notes")]
 pub struct Args {
+    /// Optional database URL (overrides config/env)
+    #[arg(long)]
+    pub db_url: Option<String>,
+
+    /// Optional log level (overrides config/env)
+    #[arg(long)]
+    pub log_level: Option<String>,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -46,15 +75,64 @@ pub enum Commands {
 }
 
 impl App {
-    pub async fn create(pool: Arc<Pool<Sqlite>>) -> Result<Self, PoolError> {
-        let app = App {
-            note_service: NoteService::create(pool.clone()),
-            link_service: LinkService::create(pool.clone()),
-        };
-        Ok(app)
+    pub async fn create(option_pool: Option<Arc<Pool<Sqlite>>>) -> Self {
+        if let Some(pool) = option_pool {
+            // if there is a pool injected through the creator function, then use it
+            // this can be used to control the dependency in automated test environment
+            Self {
+                pool: OnceCell::from(pool),
+                note_service: OnceCell::new(),
+                link_service: OnceCell::new(),
+            }
+        } else {
+            // if there is no pool injected, create the pool from config values
+            Self {
+                pool: OnceCell::new(),
+                note_service: OnceCell::new(),
+                link_service: OnceCell::new(),
+            }
+        }
     }
 
-    async fn run_with_args(&self, args: Args) {
+    async fn get_pool(&self) -> Result<Arc<Pool<Sqlite>>, PoolError> {
+        self.pool
+            .get_or_try_init(|| async {
+                match CONNECTION.get() {
+                    Some(connection) => connection.get_db_connection_pool().await,
+                    None => Err(PoolError::PoolNotCreated(sqlx::Error::PoolClosed)),
+                }
+            })
+            .await
+            .map(Clone::clone)
+    }
+
+    // internal getter function that will take the advantage of the lazy loading
+    async fn get_note_service(&self) -> Result<&NoteService, PoolError> {
+        self.note_service
+            .get_or_try_init(|| async {
+                let pool_result = self.get_pool().await;
+                match pool_result {
+                    Ok(pool) => Ok(NoteService::create(pool)),
+                    Err(error) => Err(error),
+                }
+            })
+            .await
+    }
+
+    // internal getter function that will take the advantage of the lazy loading
+    async fn get_link_service(&self) -> Result<&LinkService, PoolError> {
+        self.link_service
+            .get_or_try_init(|| async {
+                let pool_result = self.get_pool().await;
+                match pool_result {
+                    Ok(pool) => Ok(LinkService::create(pool)),
+                    Err(error) => Err(error),
+                }
+            })
+            .await
+    }
+
+    async fn run_with_args(&self, args: Args) -> Result<(), AppError> {
         match args.command {
             Commands::Create { title, content } => {
                 log::info!(
@@ -63,24 +141,22 @@ impl App {
                     content
                 );
                 let created_note = self
-                    .note_service
+                    .get_note_service()
+                    .await?
                     .create_note(NewNote {
                         title,
                         content,
                         metadata: json!({}),
                     })
-                    .await
-                    .expect("Expecting to create a note");
+                    .await?;
                 log::info!("Created note with id: {:?}", created_note.id);
+                Ok(())
             }
             Commands::Read { id } => {
                 log::info!("Reading/Fetching graph note with id: {:?}", id);
-                let note = self
-                    .note_service
-                    .get_note_by_id(id)
-                    .await
-                    .expect("Expecting to get note");
+                let note = self.get_note_service().await?.get_note_by_id(id).await?;
                 log::info!("Fetched note: {:?}", note);
+                Ok(())
             }
             Commands::Update { id, title, content } => {
                 log::info!(
@@ -89,30 +165,26 @@ impl App {
                     title,
                     content
                 );
-                let existing_note = self
-                    .note_service
-                    .get_note_by_id(id)
-                    .await
-                    .expect("Expecting note to exist");
+                let existing_note = self.get_note_service().await?.get_note_by_id(id).await?;
+
                 // use the existing note for update purpose
                 let mut note_to_update = existing_note;
                 note_to_update.title = title;
                 note_to_update.content = content;
                 let updated_note = self
-                    .note_service
+                    .get_note_service()
+                    .await?
                     .update_note(note_to_update)
-                    .await
-                    .expect("Expecting existing note to be updated");
+                    .await?;
                 log::info!("Updated note with id: {:?}", updated_note.id);
+                Ok(())
             }
             Commands::Delete { id } => {
                 log::info!("Deleting/Removing graph note with id: {:?}", id);
                 // by deleting the note we delete also the related links to this node (DELETE CASCADE)
-                self.note_service
-                    .delete_note_by_id(id)
-                    .await
-                    .expect("Expecting to delete a note");
+                self.get_note_service().await?.delete_note_by_id(id).await?;
                 log::info!("Note with id: {:?} deleted successfully", id);
+                Ok(())
             }
             Commands::Link {
                 from_note_id,
@@ -126,41 +198,55 @@ impl App {
                     to_note_id
                 );
                 let created_link = self
-                    .link_service
+                    .get_link_service()
+                    .await?
                     .create_link(NewLink {
                         from_note_id,
                         to_note_id,
                         link_type,
                     })
-                    .await
-                    .expect("Expecting to create a link between notes");
+                    .await?;
                 log::info!(
                     "Graph notes linked successfully, from_note_id: {:?} -> {:?} -> to_note_id: {:?}",
                     created_link.from_note_id,
                     created_link.link_type,
                     created_link.to_note_id
                 );
+                Ok(())
             }
         }
     }
 
-    pub async fn run(&self) {
-        self.run_with_args(Args::parse()).await;
+    pub async fn run(&self) -> Result<(), AppError> {
+        // parse the command line arguments
+        let args = Args::parse();
+        // provide the possible config overrides from command line arguments
+        let config = AppConfig::from_sources(
+            None,
+            CliOptions {
+                db_url: args.db_url.clone(),
+                log_level: args.log_level.clone(),
+            },
+        )?;
+        log::info!("Config: {:?}", config);
+        let connection = Arc::new(Connection { config: config });
+        let _ = CONNECTION.set(connection);
+        self.run_with_args(args).await?;
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::db::connection;
+    use crate::db::connection::PoolError;
     use crate::db::links::Link;
     use crate::db::links::LinkServiceError;
     use crate::db::notes::Note;
-    use crate::db::notes::NoteServiceError;
 
     use super::*;
     use clap::CommandFactory;
     use clap::Parser;
-    use futures_util::future::FutureExt;
     use rstest::rstest;
     use sqlx::sqlite::SqlitePoolOptions;
 
@@ -177,7 +263,7 @@ mod tests {
                 .await?,
         );
         connection::run_migrations(pool.clone()).await?;
-        let app = App::create(pool.clone()).await?;
+        let app = App::create(Some(pool.clone())).await;
         Ok(AppWithPool { app, pool })
     }
 
@@ -187,8 +273,9 @@ mod tests {
         let mut help_buf = Vec::new();
         cmd.write_long_help(&mut help_buf).unwrap();
         let help_str = String::from_utf8(help_buf).unwrap();
+        println!("HELP MSG: {:?}", help_str);
         assert!(help_str.contains("Terminal application for managing graph notes"));
-        assert!(help_str.contains("Usage: graph-notes-cli <COMMAND>"));
+        assert!(help_str.contains("Usage: graph-notes-cli [OPTIONS] <COMMAND>"));
         assert!(help_str.contains("Commands:"));
         assert!(help_str.contains("create  Create a new graph note"));
         assert!(help_str.contains("read    Read a graph note by provided id"));
@@ -198,12 +285,19 @@ mod tests {
         assert!(
             help_str.contains("help    Print this message or the help of the given subcommand(s)")
         );
+        assert!(help_str.contains("Options:"));
+        assert!(help_str.contains("      --db-url <DB_URL>"));
+        assert!(help_str.contains("          Optional database URL (overrides config/env)"));
+        assert!(help_str.contains("      --log-level <LOG_LEVEL>"));
+        assert!(help_str.contains("          Optional log level (overrides config/env)"));
+        assert!(help_str.contains("  -h, --help"));
+        assert!(help_str.contains("          Print help"));
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_create_note() -> Result<(), NoteServiceError> {
+    async fn test_create_note() -> Result<(), AppError> {
         let args = vec!["graph-notes-cli", "create", "Test Title", "Test Content"];
         let AppWithPool { app, pool } = create_sut().await?;
         let note_service = NoteService::create(pool);
@@ -216,7 +310,7 @@ mod tests {
             "Expecting no notes in the fresh db"
         );
         // run the CLI tool
-        app.run_with_args(Args::parse_from(args)).await;
+        app.run_with_args(Args::parse_from(args)).await?;
         // check the state of the database after the action
         let result = note_service.list_notes(2, 0).await?;
         assert_eq!(
@@ -243,7 +337,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_note() -> Result<(), NoteServiceError> {
+    async fn test_update_note() -> Result<(), AppError> {
         let AppWithPool { app, pool } = create_sut().await?;
         let note_service = NoteService::create(pool.clone());
 
@@ -254,7 +348,7 @@ mod tests {
             "Original Title",
             "Original Content",
         ];
-        app.run_with_args(Args::parse_from(create_args)).await;
+        app.run_with_args(Args::parse_from(create_args)).await?;
         let notes = note_service.list_notes(1, 0).await?;
         assert_eq!(notes.len(), 1);
         let note_id = notes[0].id;
@@ -268,7 +362,7 @@ mod tests {
             "Updated Title",
             "Updated Content",
         ];
-        app.run_with_args(Args::parse_from(update_args)).await;
+        app.run_with_args(Args::parse_from(update_args)).await?;
 
         // Verify update
         let updated = note_service.get_note_by_id(note_id).await?;
@@ -278,13 +372,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_delete_note() -> Result<(), NoteServiceError> {
+    async fn test_delete_note() -> Result<(), AppError> {
         let AppWithPool { app, pool } = create_sut().await?;
         let note_service = NoteService::create(pool.clone());
 
         // Create a note first
         let create_args = vec!["graph-notes-cli", "create", "Title", "Content"];
-        app.run_with_args(Args::parse_from(create_args)).await;
+        app.run_with_args(Args::parse_from(create_args)).await?;
         let notes = note_service.list_notes(1, 0).await?;
         assert_eq!(notes.len(), 1);
         let note_id = notes[0].id;
@@ -292,7 +386,7 @@ mod tests {
 
         // Delete the note
         let delete_args = vec!["graph-notes-cli", "delete", &note_id_string];
-        app.run_with_args(Args::parse_from(delete_args)).await;
+        app.run_with_args(Args::parse_from(delete_args)).await?;
 
         // Verify deletion
         let notes_after = note_service.list_notes(1, 0).await?;
@@ -301,13 +395,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_read_note() -> Result<(), NoteServiceError> {
+    async fn test_read_note() -> Result<(), AppError> {
         let AppWithPool { app, pool } = create_sut().await?;
         let note_service = NoteService::create(pool.clone());
 
         // Create a note first
         let create_args = vec!["graph-notes-cli", "create", "Read Title", "Read Content"];
-        app.run_with_args(Args::parse_from(create_args)).await;
+        app.run_with_args(Args::parse_from(create_args)).await?;
         let notes = note_service.list_notes(1, 0).await?;
         assert_eq!(notes.len(), 1);
         let note_id = notes[0].id;
@@ -315,7 +409,7 @@ mod tests {
 
         // Read the note via CLI (should not panic)
         let read_args = vec!["graph-notes-cli", "read", &note_id_string];
-        app.run_with_args(Args::parse_from(read_args)).await;
+        app.run_with_args(Args::parse_from(read_args)).await?;
 
         // Optionally, verify the note still exists and is unchanged
         let note = note_service.get_note_by_id(note_id).await?;
@@ -333,7 +427,7 @@ mod tests {
     async fn test_link_notes(
         #[case] link_type: String,
         #[case] expected_link_type: LinkType,
-    ) -> Result<(), LinkServiceError> {
+    ) -> Result<(), AppError> {
         let AppWithPool { app, pool } = create_sut().await?;
         let note_service = NoteService::create(pool.clone());
         let link_service = LinkService::create(pool.clone());
@@ -366,7 +460,7 @@ mod tests {
             &created_to_note_id_string,
             &link_type,
         ];
-        app.run_with_args(Args::parse_from(link_args)).await;
+        app.run_with_args(Args::parse_from(link_args)).await?;
 
         // Verify link exists
         let links = link_service.list_links(2, 0).await?;
@@ -411,15 +505,12 @@ mod tests {
             "reference",
         ];
 
-        // The CLI will panic on error, so we catch the panic
-        let result = std::panic::AssertUnwindSafe(app.run_with_args(Args::parse_from(link_args)))
-            .catch_unwind()
-            .await;
-
+        let result = app.run_with_args(Args::parse_from(link_args)).await;
         assert!(
             result.is_err(),
-            "Expected panic/error when linking to nonexistent note"
+            "Expected error when linking to nonexistent note"
         );
+        assert!(matches!(result, Err(AppError::AppLinkError(_))));
 
         // Ensure no links were created
         let links = link_service.list_links(1, 0).await?;
