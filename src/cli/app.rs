@@ -100,7 +100,7 @@ impl App {
             .get_or_try_init(|| async {
                 match CONNECTION.get() {
                     Some(connection) => connection.get_db_connection_pool().await,
-                    None => Err(PoolError::PoolNotCreated(sqlx::Error::PoolClosed)),
+                    None => Err(PoolError::ConnectionNotInitialized()),
                 }
             })
             .await
@@ -261,6 +261,7 @@ mod tests {
         let pool = Arc::new(
             SqlitePoolOptions::new()
                 .max_connections(1)
+                .after_connect(connection::enable_sqlite_foreign_keys())
                 .connect(":memory:")
                 .await?,
         );

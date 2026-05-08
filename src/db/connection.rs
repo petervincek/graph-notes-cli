@@ -4,12 +4,15 @@
 //! using a thread-safe connection pool with lazy initialization and automatic migration support.
 
 use std::env::VarError;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use once_cell::sync::OnceCell;
 use sqlx::migrate::MigrateError;
+use sqlx::pool::PoolConnectionMetadata;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use sqlx::{ConnectOptions, Pool, Sqlite, SqlitePool};
+use sqlx::{ConnectOptions, Pool, Sqlite, SqliteConnection, SqlitePool};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
@@ -31,6 +34,8 @@ pub enum PoolError {
     ConfigError(#[from] dotenvy::Error),
     #[error("Migration run failed, error: {0}")]
     MigrationFailed(#[from] MigrateError),
+    #[error("Connection not initialized")]
+    ConnectionNotInitialized(),
 }
 
 pub struct Connection {
@@ -56,20 +61,13 @@ impl Connection {
         // enforcement is enabled for every pooled connection, so that referential integrity and
         // cascade behaviors work as expected throughout the application.
         let mut options = SqliteConnectOptions::new()
-            .filename(&db_url)
+            .filename(&db_url.replace("sqlite://", ""))
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal);
         // set the logging
         options = options.log_statements(log::LevelFilter::Off);
         let db_pool = SqlitePoolOptions::new()
-            .after_connect(|conn, _meta| {
-                Box::pin(async move {
-                    sqlx::query("PRAGMA foreign_keys = ON;")
-                        .execute(conn)
-                        .await?;
-                    Ok(())
-                })
-            })
+            .after_connect(enable_sqlite_foreign_keys())
             .connect_with(options)
             .await?;
         let pool = Arc::new(db_pool);
@@ -89,4 +87,23 @@ pub async fn run_migrations(pool: Arc<Pool<Sqlite>>) -> Result<()> {
     sqlx::migrate!("./migrations").run(&*pool).await?;
     log::info!("Run migrations scripts successful.");
     Ok(())
+}
+
+// Define a reusable callback for after_connect
+pub fn enable_sqlite_foreign_keys() -> Box<
+    dyn for<'c> Fn(
+            &'c mut SqliteConnection,
+            PoolConnectionMetadata,
+        ) -> Pin<Box<dyn Future<Output = sqlx::Result<()>> + Send + 'c>>
+        + Send
+        + Sync,
+> {
+    Box::new(|conn, _meta| {
+        Box::pin(async move {
+            sqlx::query("PRAGMA foreign_keys = ON;")
+                .execute(conn)
+                .await?;
+            Ok(())
+        })
+    })
 }

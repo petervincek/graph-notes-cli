@@ -258,7 +258,7 @@ impl NoteService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::connection::run_migrations;
+    use crate::db::connection::{self, run_migrations};
     use rstest::rstest;
     use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
 
@@ -302,6 +302,7 @@ mod tests {
         let pool = Arc::new(
             SqlitePoolOptions::new()
                 .max_connections(1)
+                .after_connect(connection::enable_sqlite_foreign_keys())
                 .connect(":memory:")
                 .await?,
         );

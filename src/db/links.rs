@@ -139,8 +139,8 @@ impl LinkService {
     ///
     /// # Arguments
     ///
-    /// * `limit` - Maximum number of notes to return.
-    /// * `offset` - Number of notes to skip (for pagination).
+    /// * `limit` - Maximum number of links to return.
+    /// * `offset` - Number of links to skip (for pagination).
     pub async fn list_links_through_executor<'e, E>(
         &self,
         limit: i64,
@@ -276,7 +276,7 @@ impl LinkService {
 mod tests {
     use super::*;
     use crate::db::{
-        connection::run_migrations,
+        connection::{self, run_migrations},
         notes::{NewNote, NoteService},
     };
     use serde_json::json;
@@ -287,6 +287,7 @@ mod tests {
         let pool = Arc::new(
             SqlitePoolOptions::new()
                 .max_connections(1)
+                .after_connect(connection::enable_sqlite_foreign_keys())
                 .connect(":memory:")
                 .await?,
         );
